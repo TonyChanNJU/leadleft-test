@@ -1,7 +1,10 @@
 # Lumina - Document QA Chatbot
 
+**Languages:** English | [简体中文](README.zh-CN.md)
+
 A production-ready chatbot that allows users to upload PDF documents and ask questions about their content. It uses Retrieval-Augmented Generation (RAG) to ensure answers are grounded in the uploaded documents rather than relying on prior knowledge.
 
+> GitHub renders `README.md` by default. Use the link above to open the Chinese README (`README.zh-CN.md`).
 
 ## Quick Start
 

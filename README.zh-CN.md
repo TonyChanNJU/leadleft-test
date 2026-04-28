@@ -1,9 +1,10 @@
 # Lumina - 文档问答聊天机器人
 
-（English version: `README.md`）
+**语言：** [English](README.md) | 简体中文
 
 一个面向生产的 PDF 文档问答机器人：支持上传 PDF 并基于文档内容进行问答。系统使用 RAG（检索增强生成）保证回答有据可依，并尽量给出可核验的来源信息。
 
+> GitHub 默认展示根目录的 `README.md`。如需阅读英文说明，请点击上方 English 链接。
 
 ## 快速开始
 

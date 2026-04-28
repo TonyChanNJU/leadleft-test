@@ -156,3 +156,8 @@ This document serves as an ongoing log of development activities, milestones ach
 - **Milestone:** Open-source licensing
 - **Activities:**
   - Added `LICENSE` with MIT License text (Copyright (c) 2026 Lawrence).
+
+## [Docs: README language navigation]
+- **Milestone:** Easier navigation between English and Chinese READMEs on GitHub
+- **Activities:**
+  - Added prominent bidirectional links between `README.md` and `README.zh-CN.md` (GitHub renders `README.md` by default; users switch via markdown links).
