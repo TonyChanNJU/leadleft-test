@@ -56,6 +56,7 @@ Notes:
 
 Use the provided PDF `腾讯2025年度报告.pdf` at the repo root and try questions from the challenge doc, for example:
 
+- After uploading, **wait for indexing to complete** (the UI will show `INDEXING...` until the document is ready) before asking questions.
 - Fact: “腾讯2025年的总收入是多少？” / “Who is the CEO of the company?”
 - Summary: “总结一下主要业务板块。”
 - Numeric reasoning: “How much did net profit grow from 2024 to 2025?”
