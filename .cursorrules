@@ -1,0 +1,13 @@
+# You are working on the DocChat project.
+
+# VERY IMPORTANT
+Before making any changes, writing any code, or starting any new task, YOU MUST STRICTLY read and adhere to `spec/Agents.md`. 
+DO NOT skip reading it. It contains mandatory rules regarding the tech stack, security (DO NOT USE LiteLLM), and workflow required for this project.
+
+Canonical agent workflow rules live in `spec/agent_rules.md`.
+
+Specifically:
+- We use direct LLM SDKs (OpenAI, Anthropic, Google) to build a custom adapter.
+- We use Tailwind CSS for the frontend.
+- Do not make major architectural changes without consulting spec/project.md.
+- AT THE END of your task, YOU MUST append a summary of your development activities into `spec/history.md`.

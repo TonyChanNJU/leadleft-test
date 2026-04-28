@@ -1,0 +1,9 @@
+repos:
+  - repo: local
+    hooks:
+      - id: check-agent-rules-sync
+        name: Check agent rules sync
+        entry: python3 scripts/check_agent_rules_sync.py
+        language: system
+        pass_filenames: false
+

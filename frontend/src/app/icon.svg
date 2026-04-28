@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="luminaGradient" x1="8" y1="10" x2="56" y2="54" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4285f4" stop-opacity="0.73"/>
+      <stop offset="0.5" stop-color="#9b72cb" stop-opacity="0.73"/>
+      <stop offset="1" stop-color="#d96570" stop-opacity="0.73"/>
+    </linearGradient>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#000000" flood-opacity="0.12"/>
+    </filter>
+  </defs>
+
+  <!-- Rounded tile -->
+  <rect x="6" y="6" width="52" height="52" rx="14" fill="url(#luminaGradient)" filter="url(#softShadow)"/>
+
+  <!-- Document mark -->
+  <g fill="none" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" opacity="0.92">
+    <path d="M22 18h18l6 6v22a4 4 0 0 1-4 4H22a4 4 0 0 1-4-4V22a4 4 0 0 1 4-4Z"/>
+    <path d="M40 18v8h8"/>
+    <path d="M24 32h18"/>
+    <path d="M24 38h14"/>
+    <path d="M24 44h16"/>
+  </g>
+</svg>
