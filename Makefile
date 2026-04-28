@@ -4,6 +4,8 @@ VENV := backend/.venv
 PY := $(VENV)/bin/python
 PIP := $(PY) -m pip
 
+BACKEND_PORT ?= 8000
+
 install:
 	@test -d "$(VENV)" || python3 -m venv "$(VENV)"
 	@$(PIP) install -U pip
@@ -11,7 +13,7 @@ install:
 	cd frontend && npm install
 
 run-backend:
-	cd backend && ../$(VENV)/bin/uvicorn app.main:app --reload --port 8000
+	cd backend && BACKEND_PORT=$(BACKEND_PORT) ../$(VENV)/bin/uvicorn app.main:app --reload --port $(BACKEND_PORT)
 
 run-backend-local-embed:
 	mkdir -p data/cache/llama_index data/cache/huggingface
@@ -21,10 +23,10 @@ run-backend-local-embed:
 	HF_HOME=../data/cache/huggingface \
 	TRANSFORMERS_CACHE=../data/cache/huggingface/transformers \
 	SENTENCE_TRANSFORMERS_HOME=../data/cache/huggingface/sentence_transformers \
-	../$(VENV)/bin/uvicorn app.main:app --reload --port 8000
+	BACKEND_PORT=$(BACKEND_PORT) ../$(VENV)/bin/uvicorn app.main:app --reload --port $(BACKEND_PORT)
 
 run-frontend:
-	cd frontend && npm run dev
+	cd frontend && BACKEND_PORT=$(BACKEND_PORT) NEXT_PUBLIC_BACKEND_PORT=$(BACKEND_PORT) npm run dev
 
 run: install
 	@echo "Starting backend and frontend..."

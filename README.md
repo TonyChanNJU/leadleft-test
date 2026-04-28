@@ -78,10 +78,10 @@ Notes:
 
 Our RAG pipeline is built tightly around LlamaIndex and is designed to handle challenging documents like Chinese financial reports:
 1. **Document Parsing**: We use a layered approach. `pdfplumber` detects and extracts tables into Markdown format, while `PyMuPDF` extracts the remaining text, preserving reading order and handling Chinese multi-column text beautifully.
-2. **Chunking**: Extracted text is broken into semantic chunks using LlamaIndex's `SentenceSplitter` (chunk size: 512, overlap: 128).
+2. **Chunking**: Extracted text is broken into semantic chunks using LlamaIndex's `SentenceSplitter` (chunk size: 512, overlap: 128). Tables are also indexed as whole Markdown blocks to avoid header/value separation.
 3. **Embedding**: We use BAAI's `BGE-M3` model (via SiliconFlow API), which is state-of-the-art for multilingual/Chinese retrieval.
-4. **Retrieval**: Vector embeddings are saved to a persistent embedded `ChromaDB` database. We retrieve the `top-k=5` chunks using cosine similarity.
-5. **Generation**: The retrieved chunks are formatted with their source page number and filename, fed into the user-selected LLM, and prompt constraints heavily enforce grounded citations.
+4. **Retrieval**: Vector embeddings are saved to a persistent embedded `ChromaDB` database. We retrieve `top-k=15` chunks using cosine similarity to improve recall on large reports.
+5. **Generation**: The retrieved chunks are formatted with their source page number and filename, fed into the user-selected LLM, and prompt constraints heavily enforce grounded citations. The UI sources list is aligned to page numbers explicitly cited in the answer when present; otherwise it falls back to a small top-N list.
 
 ## Trade-offs and Future Improvements
 
@@ -94,7 +94,7 @@ Our RAG pipeline is built tightly around LlamaIndex and is designed to handle ch
 * **Vector Store**: `ChromaDB` is great for rapid local development but lacks scalability. Switching to `Qdrant` or `Milvus` in a Docker container would be preferred for high throughput.
 * **Docker Composition**: We used `make run` for speed and simplicity. If given more time, a `docker-compose.yml` defining the NextJS node frontend, FastAPI backend, and Vector DB image separately would form a true robust deployment strategy.
 * **Reranking**: For massive documents, adding a BGE-Reranker model as a post-processing step would significantly boost recall accuracy at the expense of a slightly longer retrieval delay.
-* **"图文版" PDFs / Font mapping failures**: Some PDFs render fine visually but extract poorly (e.g., only symbols) due to missing/incorrect `ToUnicode` maps, subset fonts, or text being embedded as images/vectors. Planned hardening: add per-page extraction diagnostics (text length, CJK ratio, table coverage, image density) and an OCR fallback path (e.g., OCRmyPDF to add a text layer) when extraction quality is detected as low.
+* **"图文版" PDFs / Font mapping failures**: Some PDFs render fine visually but extract poorly (e.g., only symbols or `(cid:xxxx)` placeholders) due to missing/incorrect `ToUnicode` maps, subset CID fonts, or text being embedded as images/vectors. A real-world example is the Meituan 2024 Annual Report, whose `MHeiHK` CID fonts cause both PyMuPDF and pdfminer.six to produce garbled Chinese text while numbers remain readable. Planned hardening: add per-page extraction diagnostics (text length, CJK ratio, table coverage, image density) and an OCR fallback path (e.g., PaddleOCR or OCRmyPDF) when extraction quality is detected as low.
 
 ## Development: keep Cursor rules in sync
 

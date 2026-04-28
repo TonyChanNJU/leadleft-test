@@ -16,7 +16,7 @@ def _assert_has_citations(payload: dict, doc_id: str) -> None:
 
 
 @pytest.mark.e2e
-def test_real_pdf_end_to_end_with_citations(client):
+def test_real_pdf_end_to_end_with_citations(client, monkeypatch):
     """Real integration: upload Tencent annual report PDF, wait indexing, ask Q/A with citations.
 
     Requires:
@@ -41,6 +41,18 @@ def test_real_pdf_end_to_end_with_citations(client):
         or settings.deepseek_api_key
     ):
         pytest.skip("Missing any LLM API key (OPENAI/ANTHROPIC/GOOGLE/DEEPSEEK); skipping real e2e test.")
+
+    # Avoid accidental proxy interference in CI/sandbox environments.
+    for k in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("NO_PROXY", "*")
 
     # Pick a model that actually has a configured API key.
     if settings.deepseek_api_key:

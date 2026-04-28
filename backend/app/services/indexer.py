@@ -8,6 +8,7 @@ import os
 from typing import Optional
 
 import chromadb
+from chromadb.errors import InternalError as ChromaInternalError
 from llama_index.core import (
     Document,
     Settings,
@@ -15,6 +16,7 @@ from llama_index.core import (
     VectorStoreIndex,
 )
 from llama_index.core.node_parser import SentenceSplitter
+from llama_index.core.schema import TextNode
 from llama_index.vector_stores.chroma import ChromaVectorStore
 
 from app.config import settings as app_settings
@@ -48,11 +50,27 @@ def reset_indexing_state() -> None:
         pass
 
 
+def _ensure_dir_writable(path: str) -> None:
+    """Ensure persistence directory exists and is writable."""
+    os.makedirs(path, exist_ok=True)
+    test_path = os.path.join(path, ".write_test")
+    try:
+        with open(test_path, "w") as f:
+            f.write("ok")
+        os.remove(test_path)
+    except Exception as e:
+        raise RuntimeError(
+            f"Chroma persistence dir is not writable: {path}. "
+            f"Fix permissions or change the path. Underlying error: {e}"
+        ) from e
+
+
 def _get_chroma_client() -> chromadb.PersistentClient:
     """Get or create the ChromaDB persistent client."""
     global _chroma_client
     if _chroma_client is None:
         app_settings.ensure_dirs()
+        _ensure_dir_writable(app_settings.chroma_dir)
         _chroma_client = chromadb.PersistentClient(
             path=app_settings.chroma_dir
         )
@@ -132,13 +150,59 @@ def build_index(doc_id: str, parsed_doc: ParsedDocument) -> VectorStoreIndex:
     vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
     storage_context = StorageContext.from_defaults(vector_store=vector_store)
 
-    # Build index
-    index = VectorStoreIndex.from_documents(
-        documents,
-        storage_context=storage_context,
-        transformations=[splitter],
-        show_progress=True,
-    )
+    # Build nodes for pages (split) + tables (whole-block).
+    #
+    # Why: financial PDFs often put key facts (e.g. revenue) inside tables.
+    # Sentence-based splitting can separate headers/row labels from numeric values,
+    # making retrieval miss the right evidence. We therefore index tables as
+    # whole markdown blocks with table-aware metadata.
+    nodes = splitter.get_nodes_from_documents(documents)
+
+    for page in parsed_doc.pages:
+        for t in getattr(page, "tables", []) or []:
+            md = (t.markdown or "").strip()
+            if not md:
+                continue
+            nodes.append(
+                TextNode(
+                    text=md,
+                    metadata={
+                        "doc_id": doc_id,
+                        "page_num": page.page_num,
+                        "filename": parsed_doc.filename,
+                        "source": f"{parsed_doc.filename}, Page {page.page_num}",
+                        "content_type": "table",
+                    },
+                    excluded_llm_metadata_keys=["doc_id"],
+                    excluded_embed_metadata_keys=["doc_id"],
+                )
+            )
+
+    # Build index from nodes
+    try:
+        index = VectorStoreIndex(
+            nodes=nodes,
+            storage_context=storage_context,
+            show_progress=True,
+        )
+    except ChromaInternalError as e:
+        # Attempt one recovery for "readonly database" after a wipe/restart.
+        msg = str(e).lower()
+        if "readonly database" in msg or "read only database" in msg:
+            reset_indexing_state()
+            app_settings.ensure_dirs()
+            _ensure_dir_writable(app_settings.chroma_dir)
+            chroma_client = _get_chroma_client()
+            chroma_collection = chroma_client.get_or_create_collection(collection_name)
+            vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
+            storage_context = StorageContext.from_defaults(vector_store=vector_store)
+            index = VectorStoreIndex(
+                nodes=nodes,
+                storage_context=storage_context,
+                show_progress=True,
+            )
+        else:
+            raise
 
     return index
 

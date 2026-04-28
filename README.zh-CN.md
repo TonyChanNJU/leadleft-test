@@ -85,10 +85,10 @@ make test
 我们的 RAG 流程基于 LlamaIndex，并针对中文财报等复杂文档做了设计：
 
 1. **PDF 解析**：`pdfplumber` 提取表格为 Markdown；`PyMuPDF` 提取其余文本（更擅长多栏/中文顺序）。
-2. **分块**：LlamaIndex `SentenceSplitter`（chunk size: 512, overlap: 128）。
+2. **分块**：LlamaIndex `SentenceSplitter`（chunk size: 512, overlap: 128）。表格也会以“整表 Markdown 块”的形式额外入库，避免表头/数值被拆散影响检索。
 3. **向量化**：BAAI `BGE-M3`（通过 SiliconFlow API），中英混合检索效果好。
-4. **检索**：向量持久化到 `ChromaDB`，余弦相似度检索 `top-k=5`。
-5. **生成**：将检索片段（含页码与文件名）喂给用户选择的 LLM，并用 prompt 强约束输出带引用的回答。
+4. **检索**：向量持久化到 `ChromaDB`，余弦相似度检索 `top-k=15`，提升大文档场景的事实召回率。
+5. **生成**：将检索片段（含页码与文件名）喂给用户选择的 LLM，并用 prompt 强约束输出带引用的回答。若答案正文明确写出了引用页码，则 sources 列表会优先对齐这些页码；否则回退为少量 top-N sources。
 
 ## 取舍与后续改进
 * **LLM Adapter vs LiteLLM**：出于供应链安全风险（LiteLLM 曾出现恶意事件），我们选择直接使用官方 SDK（OpenAI/Anthropic/Google/DeepSeek 兼容接口）实现轻量适配层。后续可补全端到端 streaming 来优化交互延迟。
@@ -100,7 +100,7 @@ make test
 * **向量库**：`ChromaDB` 适合快速本地开发，但扩展性有限。高吞吐场景可切换到 `Qdrant`/`Milvus`（可容器化部署）。
 * **Docker 编排**：当前用 `make run` 追求简单。后续可引入 `docker-compose.yml`，将 Next.js、FastAPI、向量库拆成独立服务，形成更稳的部署形态。
 * **重排序（Reranking）**：大文档场景可加入 BGE-Reranker 作为后处理，提高召回质量，代价是检索时延上升。
-* **“图文版”PDF / 字体映射失败**：部分 PDF 视觉上正常，但抽取文本效果很差（例如只剩符号），常见原因包括缺失/错误的 `ToUnicode` 映射、子集字体、或文本以图片/矢量方式嵌入。后续方案：加入页级诊断指标（文本长度、中文占比、表格覆盖率、图片密度），并在检测到抽取质量低时启用 OCR 兜底（例如 OCRmyPDF 为 PDF 增加文字层）。
+* **“图文版”PDF / 字体映射失败**：部分 PDF 视觉上正常，但抽取文本效果很差（例如只剩符号），常见原因包括缺失/错误的 `ToUnicode` 映射、子集字体、或文本以图片/矢量方式嵌入。实测案例：美团 2024 年度报告使用 `MHeiHK` 系列 CID 字体，PyMuPDF 和 pdfminer.six 均无法正确解码中文（数字可正常提取）。后续方案：加入页级诊断指标（文本长度、中文占比、表格覆盖率、图片密度），并在检测到抽取质量低时启用 OCR 兜底（如 PaddleOCR 或 OCRmyPDF）。
 
 ## 开发：保持 Cursor rules 一致
 

@@ -161,3 +161,28 @@ This document serves as an ongoing log of development activities, milestones ach
 - **Milestone:** Easier navigation between English and Chinese READMEs on GitHub
 - **Activities:**
   - Added prominent bidirectional links between `README.md` and `README.zh-CN.md` (GitHub renders `README.md` by default; users switch via markdown links).
+
+## [DevX: make run stability]
+- **Milestone:** Improve local one-command startup
+- **Activities:**
+  - Updated `Makefile` `run` target to wait for `GET /api/health` before starting the frontend, and to skip starting a second backend if port 8000 is already healthy (prevents proxy `ECONNREFUSED/ETIMEDOUT` and `Address already in use` from duplicate starts).
+
+## [DevX: revert make run changes]
+- **Milestone:** Restore original Makefile behavior
+- **Activities:**
+  - Reverted the `Makefile` `run` target back to the original “start backend in background, then start frontend” behavior, since the root cause of backend startup failures was an x86_64 vs arm64 environment mismatch (Warp under Rosetta) rather than startup ordering.
+
+## [RAG: improve revenue retrieval]
+- **Milestone:** Increase recall for fact questions (tables + revenue)
+- **Activities:**
+  - Indexed detected PDF tables as whole markdown blocks (in addition to sentence-split page text) to reduce table header/value separation during retrieval.
+  - Increased default `retrieval_top_k` to 15 to improve recall for key financial facts (e.g. total revenue) in large reports.
+
+## [RAG: citation alignment + source hygiene]
+- **Milestone:** Reduce noisy sources while keeping answers verifiable
+- **Activities:**
+  - Added a citation-selection layer that aligns the returned `citations` list to **page numbers explicitly referenced in the answer body** (e.g. `Page 6` / `第6页` / `(Source: ..., Page 6)`), preventing mismatches between the answer text and the UI sources list.
+  - Kept a fallback policy: when the answer does not explicitly cite page numbers, return a small top-N citation list (bounded by `max_citations`) to avoid source spam.
+  - Prevented leaking internal `[Source N]` identifiers into answer bodies by tightening prompt constraints and adding a post-processing rewrite from `Source N, Page P` → `(Source: filename, Page P)`.
+  - Tuned answer-context vs citations candidate set: LLM context remains capped (`llm_context_top_k`) for noise control, while citation candidates can use the wider retrieval set to satisfy answer-cited pages.
+  - Documented and categorized “font mapping failures” as a future improvement case (e.g., Meituan annual report with CID fonts causing garbled CJK extraction while numeric extraction remains readable).

@@ -35,7 +35,9 @@ class Settings(BaseSettings):
     # RAG settings
     chunk_size: int = 512
     chunk_overlap: int = 128
-    retrieval_top_k: int = 5
+    retrieval_top_k: int = 15
+    llm_context_top_k: int = 8
+    max_citations: int = 3
 
     model_config = {
         "env_file": os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), ".env"),
