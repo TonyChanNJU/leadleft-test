@@ -25,9 +25,20 @@ api.interceptors.response.use(
 export interface DocumentMeta {
   doc_id: string;
   filename: string;
-  total_pages: number;
+  total_pages: number | null;
   uploaded_at: string;
   indexed: boolean;
+  processing_status: "queued" | "parsing" | "ocr" | "indexing" | "ready" | "failed";
+  processing_message: string;
+  processing_error?: string | null;
+  processed_pages: number;
+  processing_progress_pct?: number | null;
+  current_page?: number | null;
+  ocr_candidate_pages_total: number;
+  ocr_processed_pages: number;
+  ocr_pages: number[];
+  low_quality_pages: number[];
+  ocr_provider?: string;
 }
 
 export interface Citation {
@@ -54,7 +65,7 @@ export const getAvailableModels = async (): Promise<AppModel[]> => {
   return response.data.models;
 };
 
-export const uploadPdf = async (file: File): Promise<{doc_id: string, filename: string, indexed: boolean}> => {
+export const uploadPdf = async (file: File): Promise<DocumentMeta> => {
   const formData = new FormData();
   formData.append("file", file);
   
@@ -69,6 +80,11 @@ export const uploadPdf = async (file: File): Promise<{doc_id: string, filename: 
 export const getDocuments = async (): Promise<DocumentMeta[]> => {
   const response = await api.get("/documents");
   return response.data.documents;
+};
+
+export const getDocument = async (doc_id: string): Promise<DocumentMeta> => {
+  const response = await api.get(`/documents/${doc_id}`);
+  return response.data;
 };
 
 export const deleteDocument = async (doc_id: string): Promise<void> => {

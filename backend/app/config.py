@@ -3,7 +3,16 @@
 import os
 from typing import Optional
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
+
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+
+
+def _resolve_repo_path(path: str) -> str:
+    """Resolve relative data paths from the repository root."""
+    return path if os.path.isabs(path) else os.path.join(REPO_ROOT, path)
 
 
 class Settings(BaseSettings):
@@ -26,10 +35,10 @@ class Settings(BaseSettings):
 
     # Data directories
     upload_dir: str = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "uploads"
+        REPO_ROOT, "data", "uploads"
     )
     chroma_dir: str = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data", "chroma"
+        REPO_ROOT, "data", "chroma"
     )
 
     # RAG settings
@@ -39,11 +48,29 @@ class Settings(BaseSettings):
     llm_context_top_k: int = 8
     max_citations: int = 3
 
+    # OCR fallback settings
+    ocr_provider: str = "none"  # "none" or "paddle"
+    ocr_dpi: int = 120
+    ocr_detection_model: str = "PP-OCRv5_mobile_det"
+    ocr_recognition_model: str = "PP-OCRv5_mobile_rec"
+    ocr_cache_dir: str = os.path.join(
+        REPO_ROOT,
+        "data",
+        "cache",
+        "paddlex",
+    )
+
     model_config = {
         "env_file": os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), ".env"),
         "env_file_encoding": "utf-8",
         "extra": "ignore"
     }
+
+    @field_validator("upload_dir", "chroma_dir", "ocr_cache_dir", mode="after")
+    @classmethod
+    def resolve_data_paths(cls, value: str) -> str:
+        """Keep relative paths stable regardless of the current working directory."""
+        return _resolve_repo_path(value)
 
     def ensure_dirs(self) -> None:
         """Create data directories if they don't exist."""

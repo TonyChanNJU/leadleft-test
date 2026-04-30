@@ -74,7 +74,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onUpload, isLoading }) =
       {isLoading ? (
         <div className="flex flex-col items-center justify-center text-slate-600 dark:text-slate-300 animate-fade-in space-y-3">
           <Loader2 className="w-8 h-8 animate-spin" />
-          <p className="text-[10px] uppercase tracking-widest font-semibold">Uploading & indexing...</p>
+          <p className="text-[10px] uppercase tracking-widest font-semibold">Uploading...</p>
         </div>
       ) : fileName ? (
         <div className="flex flex-col items-center justify-center text-slate-700 dark:text-slate-200 animate-fade-in space-y-2">

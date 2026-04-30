@@ -120,6 +120,10 @@ def build_index(doc_id: str, parsed_doc: ParsedDocument) -> VectorStoreIndex:
                 "page_num": page.page_num,
                 "filename": parsed_doc.filename,
                 "source": f"{parsed_doc.filename}, Page {page.page_num}",
+                "extraction_method": getattr(page, "extraction_method", "native"),
+                "quality_reasons": ",".join(
+                    getattr(getattr(page, "diagnostics", None), "reasons", []) or []
+                ),
             },
             excluded_llm_metadata_keys=["doc_id"],
             excluded_embed_metadata_keys=["doc_id"],

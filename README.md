@@ -52,11 +52,42 @@ Notes:
 - For local embedding, we redirect caches to workspace-writable directories under `data/cache/` (HuggingFace + LlamaIndex caches).
 - For testing, prefer a PDF with good text extractability such as `腾讯2025年度报告.pdf`.
 
+#### 2.2 (Optional) OCR fallback
+
+The parser always records page-level extraction diagnostics. OCR fallback is disabled by default and can be enabled for low-quality pages only:
+
+```env
+OCR_PROVIDER=paddle
+OCR_DPI=120
+OCR_DETECTION_MODEL=PP-OCRv5_mobile_det
+OCR_RECOGNITION_MODEL=PP-OCRv5_mobile_rec
+```
+
+Install OCR dependencies into the same backend venv before enabling this mode:
+
+```bash
+make install-ocr
+```
+
+To verify the real OCR path against the Meituan broken-font sample:
+
+```bash
+make test-ocr
+```
+
+To run the backend with OCR enabled and Paddle models cached under `data/cache/paddlex`:
+
+```bash
+make run-backend-ocr
+```
+
+Local CPU validation on `美团2024年度报告.pdf` used the default PP-OCRv5 mobile models at 120 DPI. On the first 10 pages, the integrated parser path averaged about 6.2 seconds/page with roughly 2.7 GB peak RSS. Full-document OCR for mostly broken-font PDFs can still take tens of minutes, so this mode is best treated as a quality fallback rather than the default path.
+
 ## Demo (Tencent 2025 annual report)
 
 Use the provided PDF `腾讯2025年度报告.pdf` at the repo root and try questions from the challenge doc, for example:
 
-- After uploading, **wait for indexing to complete** (the UI will show `INDEXING...` until the document is ready) before asking questions.
+- After uploading, wait for processing to complete. The UI may show `PARSING`, `OCR`, and `INDEXING` before the document becomes queryable.
 - Fact: “腾讯2025年的总收入是多少？” / “Who is the CEO of the company?”
 - Summary: “总结一下主要业务板块。”
 - Numeric reasoning: “How much did net profit grow from 2024 to 2025?”
@@ -73,12 +104,13 @@ make test
 
 Notes:
 - The real e2e test (`backend/tests/test_e2e_real_pdf.py`) needs `腾讯2025年度报告.pdf` plus valid `.env` keys.
+- Parser diagnostics use `美团2024年度报告.pdf` as a real broken font-map sample when the file is present.
 - Contract tests do not require external API keys.
 
 ## Retrieval Strategy
 
 Our RAG pipeline is built tightly around LlamaIndex and is designed to handle challenging documents like Chinese financial reports:
-1. **Document Parsing**: We use a layered approach. `pdfplumber` detects and extracts tables into Markdown format, while `PyMuPDF` extracts the remaining text, preserving reading order and handling Chinese multi-column text beautifully.
+1. **Document Parsing**: We use a layered approach. `pdfplumber` detects and extracts tables into Markdown format, while `PyMuPDF` extracts the remaining text, preserving reading order and handling Chinese multi-column text. Each page is diagnosed for extraction quality; low-quality pages can optionally use PaddleOCR fallback.
 2. **Chunking**: Extracted text is broken into semantic chunks using LlamaIndex's `SentenceSplitter` (chunk size: 512, overlap: 128). Tables are also indexed as whole Markdown blocks to avoid header/value separation.
 3. **Embedding**: We use BAAI's `BGE-M3` model (via SiliconFlow API), which is state-of-the-art for multilingual/Chinese retrieval.
 4. **Retrieval**: Vector embeddings are saved to a persistent embedded `ChromaDB` database. We retrieve `top-k=15` chunks using cosine similarity to improve recall on large reports.
@@ -95,11 +127,17 @@ Our RAG pipeline is built tightly around LlamaIndex and is designed to handle ch
 * **Vector Store**: `ChromaDB` is great for rapid local development but lacks scalability. Switching to `Qdrant` or `Milvus` in a Docker container would be preferred for high throughput.
 * **Docker Composition**: We used `make run` for speed and simplicity. If given more time, a `docker-compose.yml` defining the NextJS node frontend, FastAPI backend, and Vector DB image separately would form a true robust deployment strategy.
 * **Reranking**: For massive documents, adding a BGE-Reranker model as a post-processing step would significantly boost recall accuracy at the expense of a slightly longer retrieval delay.
-* **"图文版" PDFs / Font mapping failures**: Some PDFs render fine visually but extract poorly (e.g., only symbols or `(cid:xxxx)` placeholders) due to missing/incorrect `ToUnicode` maps, subset CID fonts, or text being embedded as images/vectors. A real-world example is the Meituan 2024 Annual Report, whose `MHeiHK` CID fonts cause both PyMuPDF and pdfminer.six to produce garbled Chinese text while numbers remain readable. Planned hardening: add per-page extraction diagnostics (text length, CJK ratio, table coverage, image density) and an OCR fallback path (e.g., PaddleOCR or OCRmyPDF) when extraction quality is detected as low.
+* **"图文版" PDFs / Font mapping failures**: Some PDFs render fine visually but extract poorly (e.g., only symbols or `(cid:xxxx)` placeholders) due to missing/incorrect `ToUnicode` maps, subset CID fonts, or text being embedded as images/vectors. A real-world example is the Meituan 2024 Annual Report, whose `MHeiHK` CID fonts cause both PyMuPDF and pdfminer.six to produce garbled Chinese text while numbers remain readable.
+  Current progress: the parser now records per-page diagnostics (text length, CJK ratio, symbol noise, table coverage, image density, font names), supports a default-off PaddleOCR fallback for pages detected as low quality, and exposes staged frontend processing states so users can see `PARSING`, `OCR`, and `INDEXING` separately.
+  Current progress: local CPU validation uses PP-OCRv5 mobile detection/recognition models at 120 DPI by default for a better speed/quality balance; the first 10 Meituan pages averaged about 6.2 seconds/page.
+  Next steps: add stage-specific progress percentages for `PARSING` and `OCR`, then refactor indexing into batchable progress-aware writes so `INDEXING` can report real progress too.
+  Next steps: that indexing refactor is expected to help both cloud and local embedding modes mainly through better throughput control, lower peak resource pressure, and easier retry/recovery behavior. It should improve stability and performance more than retrieval accuracy; retrieval quality should stay roughly the same unless chunking, metadata, or embedding models also change.
+  Next steps: the trade-off is that batches cannot be made arbitrarily small just to get prettier percentages. Very small batches would raise network round-trip overhead for cloud embeddings and can also hurt throughput for local embeddings, so indexing progress should be designed together with batch-size tuning and resumable writes rather than layered on top as a UI-only feature.
+  Next steps: move document processing from in-process background tasks to a persistent job model, checkpoint page-level OCR outputs, and resume unfinished indexing batches after restarts so interrupted jobs can continue instead of restarting from scratch.
 
 ## Development: keep Cursor rules in sync
 
-This repo treats `spec/agent_rules.md` as the single source of truth. `.cursorrules` and `.agents/workflows/agent_rules.md` must remain consistent with it.
+This repo treats `spec/agent_rules.md` as the single source of truth. The root `AGENTS.md` is the Codex entry point, and `.cursorrules` plus `.agents/workflows/agent_rules.md` must remain consistent with the canonical rules.
 
 To enforce this locally:
 

@@ -58,11 +58,42 @@ make run-frontend
 - 本地 embedding 会把缓存目录重定向到 `data/cache/`（HuggingFace + LlamaIndex），确保可写。
 - 测试建议优先用文本层更完整的 PDF（例如 `腾讯2025年度报告.pdf`）。
 
+#### 2.2（可选）OCR 兜底
+
+解析器默认会记录页级抽取质量诊断。OCR 兜底默认关闭，只会在启用后针对低质量页触发：
+
+```env
+OCR_PROVIDER=paddle
+OCR_DPI=120
+OCR_DETECTION_MODEL=PP-OCRv5_mobile_det
+OCR_RECOGNITION_MODEL=PP-OCRv5_mobile_rec
+```
+
+启用前先将 OCR 依赖安装到同一个后端 venv：
+
+```bash
+make install-ocr
+```
+
+可以用美团字体映射失败样本验证真实 OCR 路径：
+
+```bash
+make test-ocr
+```
+
+如需以 OCR 模式启动后端，并将 Paddle 模型缓存到 `data/cache/paddlex`：
+
+```bash
+make run-backend-ocr
+```
+
+本地 CPU 验证使用 `美团2024年度报告.pdf`、默认 PP-OCRv5 mobile 模型和 120 DPI。前 10 页集成解析路径平均约 6.2 秒/页，峰值 RSS 约 2.7GB。对于大部分页面都存在字体映射失败的 PDF，整本 OCR 仍可能需要数十分钟，因此该模式更适合作为质量兜底，而不是默认路径。
+
 ## 演示（腾讯 2025 年报）
 
 将仓库根目录的 `腾讯2025年度报告.pdf` 上传后，可直接用挑战文档中的示例问题进行验证，例如：
 
-- 上传后请先等待索引完成（UI 会显示 `INDEXING...`，直到文档可查询）再开始提问。
+- 上传后请先等待处理完成。UI 可能会依次显示 `PARSING`、`OCR`、`INDEXING`，文档完成后才可查询。
 - **事实型**：`腾讯2025年的总收入是多少？` / `公司的CEO是谁？`
 - **摘要型**：`总结一下主要业务板块。`
 - **比较/推理**：`How much did net profit grow from 2024 to 2025?`
@@ -79,13 +110,14 @@ make test
 
 说明：
 - 真实 e2e 测试（`backend/tests/test_e2e_real_pdf.py`）需要仓库根目录存在 `腾讯2025年度报告.pdf`，并且 `.env` 中配置了有效的 API key。
+- 解析器诊断测试会在仓库根目录存在 `美团2024年度报告.pdf` 时，将其作为真实字体映射失败样本。
 - 合约测试不依赖外部 key。
 
 ## 检索策略
 
 我们的 RAG 流程基于 LlamaIndex，并针对中文财报等复杂文档做了设计：
 
-1. **PDF 解析**：`pdfplumber` 提取表格为 Markdown；`PyMuPDF` 提取其余文本（更擅长多栏/中文顺序）。
+1. **PDF 解析**：`pdfplumber` 提取表格为 Markdown；`PyMuPDF` 提取其余文本（更擅长多栏/中文顺序）。解析器会记录每页抽取质量诊断，低质量页可按需启用 PaddleOCR 兜底。
 2. **分块**：LlamaIndex `SentenceSplitter`（chunk size: 512, overlap: 128）。表格也会以“整表 Markdown 块”的形式额外入库，避免表头/数值被拆散影响检索。
 3. **向量化**：BAAI `BGE-M3`（通过 SiliconFlow API），中英混合检索效果好。
 4. **检索**：向量持久化到 `ChromaDB`，余弦相似度检索 `top-k=15`，提升大文档场景的事实召回率。
@@ -101,11 +133,17 @@ make test
 * **向量库**：`ChromaDB` 适合快速本地开发，但扩展性有限。高吞吐场景可切换到 `Qdrant`/`Milvus`（可容器化部署）。
 * **Docker 编排**：当前用 `make run` 追求简单。后续可引入 `docker-compose.yml`，将 Next.js、FastAPI、向量库拆成独立服务，形成更稳的部署形态。
 * **重排序（Reranking）**：大文档场景可加入 BGE-Reranker 作为后处理，提高召回质量，代价是检索时延上升。
-* **“图文版”PDF / 字体映射失败**：部分 PDF 视觉上正常，但抽取文本效果很差（例如只剩符号），常见原因包括缺失/错误的 `ToUnicode` 映射、子集字体、或文本以图片/矢量方式嵌入。实测案例：美团 2024 年度报告使用 `MHeiHK` 系列 CID 字体，PyMuPDF 和 pdfminer.six 均无法正确解码中文（数字可正常提取）。后续方案：加入页级诊断指标（文本长度、中文占比、表格覆盖率、图片密度），并在检测到抽取质量低时启用 OCR 兜底（如 PaddleOCR 或 OCRmyPDF）。
+* **“图文版”PDF / 字体映射失败**：部分 PDF 视觉上正常，但抽取文本效果很差（例如只剩符号），常见原因包括缺失/错误的 `ToUnicode` 映射、子集字体、或文本以图片/矢量方式嵌入。实测案例：美团 2024 年度报告使用 `MHeiHK` 系列 CID 字体，PyMuPDF 和 pdfminer.six 均无法正确解码中文（数字可正常提取）。
+  当前进展：解析器已加入页级诊断指标（文本长度、中文占比、符号噪声、表格覆盖率、图片密度、字体名），并支持默认关闭的 PaddleOCR 兜底；前端也已经把处理过程拆成 `PARSING`、`OCR`、`INDEXING` 三个阶段分别展示。
+  当前进展：本地 CPU 验证默认使用 PP-OCRv5 mobile 检测/识别模型和 120 DPI，以取得更好的速度/质量平衡；美团前 10 页平均约 6.2 秒/页。
+  下一步：为 `PARSING` 和 `OCR` 增加阶段专属百分比，再把索引流程改造成可分批汇报进度的写入路径，让 `INDEXING` 也能显示真实百分比。
+  下一步：索引改造对云端和本地 embedding 的主要正向影响会落在性能与稳定性上，比如更好地控制吞吐、降低资源峰值、并简化失败后的重试与恢复；它本身不会直接提升检索准确度，除非同时调整 chunking、metadata 或 embedding 模型。
+  下一步：代价是 batch 不能为了前端百分比显示而切得过小。过小的 batch 会提高云端 embedding 的网络往返成本，也可能拖慢本地 embedding 的整体吞吐，所以 `INDEXING` 百分比更适合和批大小调优、可恢复写入一起设计，而不是单独为了 UI 硬拆。
+  下一步：把文档处理从进程内后台任务迁移到持久化 job 模型，持久化页级 OCR 结果和索引批次 checkpoint，在服务重启后恢复未完成任务，而不是整单重跑。
 
 ## 开发：保持 Cursor rules 一致
 
-本仓库把 `spec/agent_rules.md` 作为规则单一真源。`.cursorrules` 和 `.agents/workflows/agent_rules.md` 必须与其保持一致。
+本仓库把 `spec/agent_rules.md` 作为规则单一真源。根目录 `AGENTS.md` 是 Codex 入口，`.cursorrules` 和 `.agents/workflows/agent_rules.md` 必须与规则真源保持一致。
 
 本地启用 pre-commit 校验：
 
@@ -119,4 +157,3 @@ pre-commit install
 ```bash
 python3 scripts/check_agent_rules_sync.py
 ```
-

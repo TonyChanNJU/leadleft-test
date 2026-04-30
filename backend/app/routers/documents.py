@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, HTTPException
 
-from app.routers.upload import get_documents
+from app.routers.upload import get_documents, _public_document_meta
 
 router = APIRouter()
 
@@ -11,18 +11,7 @@ router = APIRouter()
 async def list_documents():
     """List all uploaded documents."""
     docs = get_documents()
-    return {
-        "documents": [
-            {
-                "doc_id": meta["doc_id"],
-                "filename": meta["filename"],
-                "total_pages": meta["total_pages"],
-                "uploaded_at": meta["uploaded_at"],
-                "indexed": meta["indexed"],
-            }
-            for meta in docs.values()
-        ]
-    }
+    return {"documents": [_public_document_meta(meta) for meta in docs.values()]}
 
 
 @router.get("/documents/{doc_id}")
@@ -33,13 +22,7 @@ async def get_document(doc_id: str):
         raise HTTPException(status_code=404, detail=f"Document {doc_id} not found")
 
     meta = docs[doc_id]
-    return {
-        "doc_id": meta["doc_id"],
-        "filename": meta["filename"],
-        "total_pages": meta["total_pages"],
-        "uploaded_at": meta["uploaded_at"],
-        "indexed": meta["indexed"],
-    }
+    return _public_document_meta(meta)
 
 @router.get("/documents/{doc_id}/pdf")
 async def get_document_pdf(doc_id: str):

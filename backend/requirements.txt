@@ -8,6 +8,7 @@ pydantic-settings>=2.0.0
 # PDF parsing
 PyMuPDF>=1.24.0
 pdfplumber>=0.11.0
+# Optional OCR fallback dependencies live in requirements-ocr.txt.
 
 # RAG engine
 llama-index>=0.12.0

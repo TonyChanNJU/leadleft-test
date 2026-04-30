@@ -5,7 +5,7 @@ import { Send, FileText, Trash2, AlertCircle, CheckCircle2, Moon, Sun } from "lu
 import { FileUpload } from "@/components/FileUpload";
 import { MessageBubble } from "@/components/MessageBubble";
 import { ModelSelector } from "@/components/ModelSelector";
-import { uploadPdf, getDocuments, deleteDocument, clearAllDocuments, chat, getAvailableModels, DocumentMeta, Citation, AppModel } from "@/lib/api";
+import { uploadPdf, getDocument, getDocuments, deleteDocument, clearAllDocuments, chat, getAvailableModels, DocumentMeta, Citation, AppModel } from "@/lib/api";
 
 interface Message {
   role: "user" | "assistant";
@@ -17,6 +17,71 @@ interface Message {
 interface ToastData {
   msg: string;
   type: "error" | "success";
+}
+
+const PROCESSING_TIMEOUT_MS = 30 * 60 * 1000;
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function upsertDocumentState(documents: DocumentMeta[], nextDoc: DocumentMeta): DocumentMeta[] {
+  const index = documents.findIndex((doc) => doc.doc_id === nextDoc.doc_id);
+  if (index === -1) {
+    return [nextDoc, ...documents];
+  }
+
+  const next = [...documents];
+  next[index] = nextDoc;
+  return next;
+}
+
+function getPollDelayMs(doc: DocumentMeta, startedAt: number): number {
+  const elapsedMs = Date.now() - startedAt;
+  const pages = Math.max(doc.total_pages ?? 1, 1);
+  const timePressureBoost = Math.min(Math.floor(elapsedMs / 60_000) * 250, 1_500);
+
+  switch (doc.processing_status) {
+    case "queued":
+      return 1_000 + timePressureBoost;
+    case "parsing":
+      return Math.min(4_000, 1_200 + pages * 35 + timePressureBoost);
+    case "ocr":
+      return Math.min(12_000, 2_500 + pages * 180 + timePressureBoost);
+    case "indexing":
+      return Math.min(6_000, 1_500 + pages * 60 + timePressureBoost);
+    case "failed":
+    case "ready":
+      return 0;
+    default:
+      return 2_000 + timePressureBoost;
+  }
+}
+
+function getDocumentStatusBadge(doc: DocumentMeta): string | null {
+  const progressPct = doc.processing_progress_pct;
+
+  switch (doc.processing_status) {
+    case "queued":
+      return "QUEUED";
+    case "parsing":
+      return progressPct != null ? `PARSING ${progressPct}%` : "PARSING";
+    case "ocr":
+      return progressPct != null ? `OCR ${progressPct}%` : "OCR";
+    case "indexing":
+      return "INDEXING";
+    case "failed":
+      return "FAILED";
+    default:
+      return null;
+  }
+}
+
+function getDocumentStatusTone(doc: DocumentMeta): string {
+  if (doc.processing_status === "failed") {
+    return "border-red-200 dark:border-red-500/40 bg-red-50 dark:bg-red-500/10 text-red-700 dark:text-red-100";
+  }
+  return "border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900/40 text-slate-600 dark:text-slate-300";
 }
 
 export default function Home() {
@@ -57,6 +122,10 @@ export default function Home() {
   const fetchDocuments = async () => {
     const docs = await getDocuments();
     setDocuments(docs);
+  };
+
+  const mergeDocument = (doc: DocumentMeta) => {
+    setDocuments((prev) => upsertDocumentState(prev, doc));
   };
 
   const fetchStartupData = async () => {
@@ -101,43 +170,95 @@ export default function Home() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  const announceProcessingStatus = (doc: DocumentMeta, fileName: string) => {
+    switch (doc.processing_status) {
+      case "ocr":
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: `Low-quality pages detected in [${fileName}]. Running OCR fallback before indexing.`,
+          },
+        ]);
+        showToast("Running OCR fallback...", "success");
+        return;
+      case "indexing":
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: `OCR/parsing finished for [${fileName}]. Building the vector index now.`,
+          },
+        ]);
+        showToast("Building index...", "success");
+        return;
+      case "failed":
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: `Processing failed for [${fileName}]. ${doc.processing_error ?? "Please inspect the backend logs."}`,
+          },
+        ]);
+        showToast("Document processing failed", "error");
+        return;
+      default:
+        return;
+    }
+  };
+
+  const waitForDocumentReady = async (initialDoc: DocumentMeta, fileName: string) => {
+    const startedAt = Date.now();
+    let lastStatus = initialDoc.processing_status;
+
+    while (Date.now() - startedAt < PROCESSING_TIMEOUT_MS) {
+      const doc = await getDocument(initialDoc.doc_id);
+      mergeDocument(doc);
+
+      if (doc.processing_status !== lastStatus) {
+        announceProcessingStatus(doc, fileName);
+        lastStatus = doc.processing_status;
+      }
+
+      if (doc.processing_status === "ready" || doc.indexed) {
+        return doc;
+      }
+
+      if (doc.processing_status === "failed") {
+        throw new Error(doc.processing_error ?? "Document processing failed.");
+      }
+
+      await delay(getPollDelayMs(doc, startedAt));
+    }
+
+    throw new Error("Document processing is still running.");
+  };
+
   const handleUpload = async (file: File) => {
     setIsUploading(true);
     try {
       const uploadRes = await uploadPdf(file);
-      await fetchDocuments();
+      mergeDocument(uploadRes);
       setMessages(prev => [...prev, {
         role: "assistant",
-        content: `Document payload [${file.name}] ingested successfully. Indexing in progress...`,
+        content: `Document payload [${file.name}] accepted. Parsing in background...`,
       }]);
 
-      showToast("Upload complete. Indexing...", "success");
+      showToast("Upload complete. Parsing...", "success");
 
-      // Poll until indexed (background indexing).
-      const startedAt = Date.now();
-      const timeoutMs = 10 * 60 * 1000; // 10 minutes
-      const intervalMs = 1500;
-      const poll = async () => {
-        while (Date.now() - startedAt < timeoutMs) {
-          const docs = await getDocuments();
-          setDocuments(docs);
-          const doc = docs.find((d) => d.doc_id === uploadRes.doc_id);
-          if (doc?.indexed) return true;
-          await new Promise((r) => setTimeout(r, intervalMs));
-        }
-        return false;
-      };
-      void poll().then((ok) => {
-        if (ok) {
+      void waitForDocumentReady(uploadRes, file.name)
+        .then((doc) => {
+          mergeDocument(doc);
           setMessages(prev => [...prev, {
             role: "assistant",
             content: `Indexing completed for [${file.name}]. Ready for queries.`,
           }]);
           showToast("Document indexed", "success");
-        } else {
-          showToast("Indexing still running. Please wait.", "error");
-        }
-      });
+        })
+        .catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : "Document processing is still running.";
+          showToast(message, "error");
+        });
     } catch (err: unknown) {
       console.error("Upload failed", err);
       const axiosErr = err as { response?: { status?: number } } | undefined;
@@ -190,6 +311,11 @@ export default function Home() {
       return;
     }
 
+    if (!documents.some((doc) => doc.indexed)) {
+      showToast("Documents are still processing. Wait until indexing is complete.", "error");
+      return;
+    }
+
     const question = input.trim();
     setInput("");
     
@@ -199,7 +325,7 @@ export default function Home() {
     setMessages([...newMessages, { role: "assistant", content: "Processing...", isLoading: true }]);
 
     try {
-      const docIds = documents.map(d => d.doc_id);
+      const docIds = documents.filter((doc) => doc.indexed).map((doc) => doc.doc_id);
       const res = await chat(question, docIds, selectedModel);
       setMessages([...newMessages, {
         role: "assistant",
@@ -459,13 +585,18 @@ export default function Home() {
                         {doc.filename}
                       </span>
                       <span className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 uppercase tracking-wider font-semibold">
-                        {doc.total_pages} pages
-                        {!doc.indexed && (
-                          <span className="ml-2 inline-flex items-center rounded-full border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900/40 px-2 py-0.5 text-[9px] font-semibold tracking-widest text-slate-600 dark:text-slate-300">
-                            INDEXING...
+                        {doc.total_pages ? `${doc.total_pages} pages` : "Page count pending"}
+                        {getDocumentStatusBadge(doc) && (
+                          <span className={`ml-2 inline-flex items-center rounded-full border px-2 py-0.5 text-[9px] font-semibold tracking-widest ${getDocumentStatusTone(doc)}`}>
+                            {getDocumentStatusBadge(doc)}
                           </span>
                         )}
                       </span>
+                      {(doc.processing_status !== "ready" || doc.processing_error) && (
+                        <span className={`mt-1 text-[10px] ${doc.processing_status === "failed" ? "text-red-600 dark:text-red-300" : "text-slate-500 dark:text-slate-400"}`}>
+                          {doc.processing_error ?? doc.processing_message}
+                        </span>
+                      )}
                     </div>
                   </div>
                   <button 

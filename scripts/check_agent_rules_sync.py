@@ -53,12 +53,12 @@ def _extract_mandatory_workflow_items(spec_text: str) -> list[str]:
 
 def _expected_workflow_rules(items: list[str]) -> str:
     # The workflow file is allowed to carry Cursor-specific guidance on item 1.
-    cursor_item_1 = "Before starting any task in this workspace, you MUST read `spec/Agents.md` (in Cursor, use the file read tool)."
+    cursor_item_1 = "Before starting any task in this workspace, you MUST read `spec/development_rules.md` (in Cursor, use the file read tool)."
     expected_items = [cursor_item_1, *items[1:]]
 
     lines = [
         "---",
-        "description: Ensure spec/Agents.md is strictly followed (Cursor compatible)",
+        "description: Ensure spec/development_rules.md is strictly followed (Cursor compatible)",
         "---",
         "",
         "This workflow rule file must stay consistent with `spec/agent_rules.md` (single source of truth).",
@@ -78,7 +78,7 @@ def _expected_cursorrules() -> str:
         "# You are working on the DocChat project.",
         "",
         "# VERY IMPORTANT",
-        "Before making any changes, writing any code, or starting any new task, YOU MUST STRICTLY read and adhere to `spec/Agents.md`.",
+        "Before making any changes, writing any code, or starting any new task, YOU MUST STRICTLY read and adhere to `spec/development_rules.md`.",
         "DO NOT skip reading it. It contains mandatory rules regarding the tech stack, security (DO NOT USE LiteLLM), and workflow required for this project.",
         "",
         "Canonical agent workflow rules live in `spec/agent_rules.md`.",
@@ -137,4 +137,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

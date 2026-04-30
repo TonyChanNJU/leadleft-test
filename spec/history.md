@@ -50,7 +50,7 @@ This document serves as an ongoing log of development activities, milestones ach
 ## [Maintenance: Cursor Agent Rules Compatibility]
 - **Milestone:** Agent workflow polish
 - **Activities:**
-  - Updated `.agents/workflows/agent_rules.md` to remove the non-Cursor-specific `view_file` tool requirement and clarify using Cursor's file read tool instead, while keeping the same enforcement intent (`spec/Agents.md` → `spec/project.md` → append to `spec/history.md`).
+  - Updated `.agents/workflows/agent_rules.md` to remove the non-Cursor-specific `view_file` tool requirement and clarify using Cursor's file read tool instead, while keeping the same enforcement intent (development rules → `spec/project.md` → append to `spec/history.md`).
 
 ## [Maintenance: PDF Source Preview + Citation UX Fixes]
 - **Milestone:** Improve source verification workflow
@@ -186,3 +186,71 @@ This document serves as an ongoing log of development activities, milestones ach
   - Prevented leaking internal `[Source N]` identifiers into answer bodies by tightening prompt constraints and adding a post-processing rewrite from `Source N, Page P` → `(Source: filename, Page P)`.
   - Tuned answer-context vs citations candidate set: LLM context remains capped (`llm_context_top_k`) for noise control, while citation candidates can use the wider retrieval set to satisfy answer-cited pages.
   - Documented and categorized “font mapping failures” as a future improvement case (e.g., Meituan annual report with CID fonts causing garbled CJK extraction while numeric extraction remains readable).
+
+## [DevX: clarify agent rule entry points]
+- **Milestone:** Reduce confusion between Codex entry files and project development rules
+- **Activities:**
+  - Renamed the project-specific development guide to `spec/development_rules.md` so it no longer conflicts with Codex's root `AGENTS.md` convention.
+  - Added root `AGENTS.md` as the Codex entry point, pointing agents to `spec/agent_rules.md` and structural-change guidance in `spec/project.md`.
+  - Updated `spec/agent_rules.md`, `.cursorrules`, `.agents/workflows/agent_rules.md`, and `scripts/check_agent_rules_sync.py` to reference `spec/development_rules.md`.
+  - Documented the relationship between `AGENTS.md`, `spec/agent_rules.md`, `.cursorrules`, and `.agents/workflows/agent_rules.md` in both READMEs.
+
+## [PDF parsing: low-quality extraction diagnostics + OCR fallback]
+- **Milestone:** Harden parsing for image-based PDFs and broken font maps
+- **Activities:**
+  - Added page-level diagnostics for native PDF extraction quality, including text length, CJK ratio, CID/replacement/private-use glyph signals, symbol noise, image density, table coverage, and font names.
+  - Added `OCR_PROVIDER` / `OCR_DPI` settings and a default-off PaddleOCR fallback path that only runs on pages flagged as low quality.
+  - Exposed `low_quality_pages` and `ocr_pages` in upload metadata/response and indexed extraction metadata with each page document.
+  - Documented the optional OCR fallback in English and Chinese READMEs and added unit tests for diagnostics, PaddleOCR result parsing, OCR fallback behavior, and quality summary properties.
+
+## [PDF parsing: Meituan font-map regression coverage]
+- **Milestone:** Validate OCR fallback detection against a real broken CJK PDF
+- **Activities:**
+  - Added `美团2024年度报告.pdf` parser tests that assert the real report is flagged as a low-quality font mapping sample with replacement-character and CJK mapping failure signals.
+  - Added a mocked PaddleOCR fallback test using the Meituan report to verify that enabling `OCR_PROVIDER=paddle` routes low-quality pages through the OCR path without requiring PaddleOCR in default test runs.
+  - Documented the Meituan PDF as an optional parser diagnostic sample in both READMEs.
+
+## [PDF parsing: real PaddleOCR validation + performance tuning]
+- **Milestone:** Verify OCR fallback against the Meituan broken-font sample
+- **Activities:**
+  - Created a temporary Python 3.10 OCR validation environment and installed PaddleOCR/PaddlePaddle to run real OCR against `美团2024年度报告.pdf`.
+  - Verified real OCR output on low-quality Meituan pages, recovering readable Chinese text and financial table values where native extraction produced replacement-character noise.
+  - Cached the PaddleOCR instance and disabled optional document orientation/unwarping/textline orientation models to avoid repeated per-page initialization.
+  - Switched OCR defaults to PP-OCRv5 mobile detection/recognition models and 120 DPI after benchmarking server vs mobile models on local CPU.
+  - Measured the integrated parser path on the first 10 Meituan pages: ~6.2 seconds/page average with ~2.7GB peak RSS, confirming full-document OCR should remain an opt-in fallback.
+
+## [DevX: integrate OCR dependencies into project environment]
+- **Milestone:** Make real OCR reproducible in the backend venv
+- **Activities:**
+  - Verified `paddlepaddle`/`paddleocr` install and run successfully in the existing Python 3.13 `backend/.venv`, so a separate Python 3.10 OCR environment is no longer needed.
+  - Added `backend/requirements-ocr.txt` for heavy optional OCR dependencies while keeping the default install lightweight.
+  - Added `make install-ocr` to install PaddleOCR dependencies into the same backend venv used by the application.
+  - Added `make test-ocr` and `backend/tests/run_ocr_smoke.py` to run a real OCR smoke test against `美团2024年度报告.pdf`.
+  - Added `make run-backend-ocr` and project-local Paddle model caching under `data/cache/paddlex`.
+  - Updated both READMEs to document the project-native OCR installation and verification flow.
+
+## [UX: staged processing status for OCR fallback]
+- **Milestone:** Make long-running OCR waits visible and cheaper to poll
+- **Activities:**
+  - Moved PDF parsing out of the synchronous upload request and into the existing background pipeline so upload returns quickly while parsing, OCR fallback, and indexing continue asynchronously.
+  - Added document processing states (`queued`, `parsing`, `ocr`, `indexing`, `ready`, `failed`) plus progress metadata to the document registry and `/api/documents` responses.
+  - Added parser progress callbacks so low-quality pages can flip the frontend into an explicit OCR state before indexing starts.
+  - Switched the frontend from fixed-interval full-list polling to per-document adaptive polling with slower intervals during OCR-heavy phases.
+  - Updated the document list and assistant status messages so users can see parsing, OCR, indexing, and failure transitions directly in the UI.
+
+## [Docs: OCR progress + resumability roadmap]
+- **Milestone:** Clarify what is done versus what remains
+- **Activities:**
+  - Updated the English and Chinese READMEs so the demo flow reflects the new staged processing UI (`PARSING`, `OCR`, `INDEXING`) instead of the old indexing-only wait.
+  - Expanded the broken-font / OCR fallback trade-off section to distinguish current progress from next steps.
+  - Documented the near-term plan to add explicit progress percentages for `PARSING` and `OCR`.
+  - Documented the longer-term resumability direction: persistent job state, page-level OCR checkpoints, and resumable indexing batches after server restarts.
+
+## [UX: parsing + OCR percentages]
+- **Milestone:** Make staged progress more concrete
+- **Activities:**
+  - Split PDF processing into a native parsing pass followed by a targeted OCR pass over low-quality pages so `PARSING` and `OCR` progress can each report real percentages.
+  - Added OCR candidate-count metadata and stage-specific progress percentages to document status responses for frontend rendering.
+  - Updated the frontend status badge to display `PARSING xx%` and `OCR xx%` instead of only page counters.
+  - Expanded the README trade-off note to clarify that future batch-aware indexing progress should mainly improve performance and recoverability for both cloud and local embedding modes, rather than retrieval accuracy by itself.
+  - Added the missing README caveat that overly small indexing batches would increase cloud embedding round-trip overhead and can also reduce local embedding throughput.
