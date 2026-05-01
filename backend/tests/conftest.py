@@ -11,11 +11,16 @@ def isolated_data_dirs(tmp_path, monkeypatch):
 
     upload_dir = tmp_path / "uploads"
     chroma_dir = tmp_path / "chroma"
+    jobs_db_path = tmp_path / "document_jobs.sqlite3"
+    job_artifacts_dir = tmp_path / "jobs"
     upload_dir.mkdir(parents=True, exist_ok=True)
     chroma_dir.mkdir(parents=True, exist_ok=True)
+    job_artifacts_dir.mkdir(parents=True, exist_ok=True)
 
     monkeypatch.setattr(settings, "upload_dir", str(upload_dir))
     monkeypatch.setattr(settings, "chroma_dir", str(chroma_dir))
+    monkeypatch.setattr(settings, "jobs_db_path", str(jobs_db_path))
+    monkeypatch.setattr(settings, "job_artifacts_dir", str(job_artifacts_dir))
     settings.ensure_dirs()
 
     # Reload the upload registry after changing paths.
@@ -28,7 +33,12 @@ def isolated_data_dirs(tmp_path, monkeypatch):
 
     reset_indexing_state()
 
-    return {"upload_dir": upload_dir, "chroma_dir": chroma_dir}
+    return {
+        "upload_dir": upload_dir,
+        "chroma_dir": chroma_dir,
+        "jobs_db_path": jobs_db_path,
+        "job_artifacts_dir": job_artifacts_dir,
+    }
 
 
 @pytest.fixture()
@@ -50,4 +60,3 @@ def wait_for_indexed(client: TestClient, doc_id: str, timeout_s: float = 30.0, i
                 return last
         time.sleep(interval_s)
     raise AssertionError(f"Timed out waiting for indexed=true for doc_id={doc_id}; last={last}")
-

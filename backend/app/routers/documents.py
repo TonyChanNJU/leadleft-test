@@ -3,6 +3,7 @@
 from fastapi import APIRouter, HTTPException
 
 from app.routers.upload import get_documents, _public_document_meta
+from app.services.document_jobs import clear_jobs, delete_job
 
 router = APIRouter()
 
@@ -74,6 +75,7 @@ async def delete_document(doc_id: str):
     
     from app.routers.upload import save_registry
     save_registry(docs)
+    delete_job(doc_id)
 
     # Remove from vector store
     from app.services.indexer import delete_index
@@ -96,6 +98,7 @@ async def clear_all_documents():
     docs = get_documents()
     docs.clear()
     save_registry(docs)
+    clear_jobs()
     
     # Wipe PDF uploads except registry
     if os.path.exists(settings.upload_dir):

@@ -5,10 +5,11 @@ page-by-page content with metadata for downstream indexing.
 """
 
 import io
+import json
 import os
 import re
-from dataclasses import dataclass, field
-from typing import Callable, Optional
+from dataclasses import asdict, dataclass, field
+from typing import Any, Callable, Optional
 
 import fitz  # PyMuPDF
 import pdfplumber
@@ -70,6 +71,9 @@ class PageContent:
     tables: list[TableData] = field(default_factory=list)
     diagnostics: Optional[PageDiagnostics] = None
     extraction_method: str = "native"
+    native_text: Optional[str] = None
+    ocr_text: Optional[str] = None
+    ocr_completed: bool = False
 
     @property
     def full_content(self) -> str:
@@ -78,6 +82,75 @@ class PageContent:
             return self.text
         # Already merged during extraction
         return self.text
+
+
+def _checkpoint_file_path(checkpoint_dir: str, page_num: int) -> str:
+    """Return the per-page checkpoint path."""
+    return os.path.join(checkpoint_dir, f"page_{page_num:04d}.json")
+
+
+def _serialize_page_content(page: PageContent) -> dict[str, Any]:
+    """Serialize a page content object for checkpoint storage."""
+    return {
+        "page_num": page.page_num,
+        "text": page.text,
+        "native_text": page.native_text,
+        "ocr_text": page.ocr_text,
+        "ocr_completed": page.ocr_completed,
+        "extraction_method": page.extraction_method,
+        "tables": [asdict(table) for table in page.tables],
+        "diagnostics": asdict(page.diagnostics) if page.diagnostics else None,
+    }
+
+
+def _deserialize_page_content(payload: dict[str, Any]) -> PageContent:
+    """Deserialize one checkpointed page."""
+    diagnostics_payload = payload.get("diagnostics")
+    diagnostics = (
+        PageDiagnostics(**diagnostics_payload) if isinstance(diagnostics_payload, dict) else None
+    )
+    tables = [
+        TableData(
+            page_num=int(table["page_num"]),
+            bbox=tuple(table["bbox"]),
+            markdown=table["markdown"],
+        )
+        for table in (payload.get("tables") or [])
+    ]
+    page = PageContent(
+        page_num=int(payload["page_num"]),
+        text=payload.get("text", ""),
+        native_text=payload.get("native_text"),
+        ocr_text=payload.get("ocr_text"),
+        ocr_completed=bool(payload.get("ocr_completed", False)),
+        tables=tables,
+        diagnostics=diagnostics,
+        extraction_method=payload.get("extraction_method", "native"),
+    )
+    if page.native_text is None:
+        page.native_text = page.text
+    return page
+
+
+def _load_page_checkpoint(checkpoint_dir: str, page_num: int) -> PageContent | None:
+    """Load a page checkpoint if it exists."""
+    checkpoint_path = _checkpoint_file_path(checkpoint_dir, page_num)
+    if not os.path.exists(checkpoint_path):
+        return None
+
+    with open(checkpoint_path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+    return _deserialize_page_content(payload)
+
+
+def _save_page_checkpoint(checkpoint_dir: str, page: PageContent) -> None:
+    """Persist one page checkpoint atomically."""
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    checkpoint_path = _checkpoint_file_path(checkpoint_dir, page.page_num)
+    tmp_path = f"{checkpoint_path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(_serialize_page_content(page), f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, checkpoint_path)
 
 
 @dataclass
@@ -533,6 +606,7 @@ def _extract_native_page_content(
     return PageContent(
         page_num=page_num,
         text=merged_text,
+        native_text=merged_text,
         tables=tables,
         diagnostics=diagnostics,
         extraction_method="native",
@@ -544,6 +618,7 @@ def parse_pdf(
     ocr_provider: Optional[str] = None,
     ocr_dpi: Optional[int] = None,
     progress_callback: Optional[ParseProgressCallback] = None,
+    checkpoint_dir: Optional[str] = None,
 ) -> ParsedDocument:
     """Parse a PDF file, extracting text and tables from all pages.
     
@@ -552,6 +627,7 @@ def parse_pdf(
     
     Args:
         file_path: Absolute path to the PDF file.
+        checkpoint_dir: Optional directory for per-page parse/OCR checkpoints.
         
     Returns:
         ParsedDocument with page-by-page content.
@@ -574,29 +650,44 @@ def parse_pdf(
 
     try:
         total_pages = len(fitz_doc)
+        pages = [None] * total_pages
+        parsed_pages = 0
+
+        if checkpoint_dir:
+            for page_num in range(1, total_pages + 1):
+                checkpointed_page = _load_page_checkpoint(checkpoint_dir, page_num)
+                if checkpointed_page is None:
+                    continue
+                pages[page_num - 1] = checkpointed_page
+                parsed_pages += 1
 
         if progress_callback is not None:
             progress_callback(
                 ParseProgress(
                     stage="parsing",
                     total_pages=total_pages,
-                    processed_pages=0,
+                    processed_pages=parsed_pages,
+                    current_page=parsed_pages if parsed_pages else None,
                 )
             )
 
         for i in range(total_pages):
+            if pages[i] is not None:
+                continue
             fitz_page = fitz_doc[i]
             plumber_page = plumber_doc.pages[i]
             page_num = i + 1  # 1-indexed
 
             page_content = _extract_native_page_content(fitz_page, plumber_page, page_num)
-            pages.append(page_content)
+            pages[i] = page_content
+            if checkpoint_dir:
+                _save_page_checkpoint(checkpoint_dir, page_content)
             if progress_callback is not None:
                 progress_callback(
                     ParseProgress(
                         stage="parsing",
                         total_pages=total_pages,
-                        processed_pages=page_num,
+                        processed_pages=sum(1 for page in pages if page is not None),
                         current_page=page_num,
                     )
                 )
@@ -611,20 +702,26 @@ def parse_pdf(
         ocr_enabled = normalized_provider not in ("", "none", "off", "disabled")
         if ocr_enabled and low_quality_page_indexes:
             total_candidates = len(low_quality_page_indexes)
+            completed_candidates = sum(1 for index in low_quality_page_indexes if pages[index].ocr_completed)
+            pending_indexes = [index for index in low_quality_page_indexes if not pages[index].ocr_completed]
             if progress_callback is not None:
                 progress_callback(
                     ParseProgress(
                         stage="ocr",
                         total_pages=total_pages,
-                        processed_pages=0,
-                        current_page=pages[low_quality_page_indexes[0]].page_num,
+                        processed_pages=completed_candidates,
+                        current_page=(
+                            pages[pending_indexes[0]].page_num
+                            if pending_indexes
+                            else pages[low_quality_page_indexes[0]].page_num
+                        ),
                         ocr_candidate_pages_total=total_candidates,
-                        ocr_processed_pages=0,
+                        ocr_processed_pages=completed_candidates,
                     )
                 )
 
-            ocr_processed_pages = 0
-            for index in low_quality_page_indexes:
+            ocr_processed_pages = completed_candidates
+            for index in pending_indexes:
                 page_content = pages[index]
                 diagnostics = page_content.diagnostics
                 if diagnostics is None:
@@ -643,6 +740,11 @@ def parse_pdf(
                     else:
                         page_content.text = f"{page_content.text}\n\n[OCR fallback]\n{ocr_text}"
                         page_content.extraction_method = "native+ocr"
+                    page_content.ocr_text = ocr_text
+
+                page_content.ocr_completed = True
+                if checkpoint_dir:
+                    _save_page_checkpoint(checkpoint_dir, page_content)
 
                 ocr_processed_pages += 1
                 if progress_callback is not None:
@@ -661,4 +763,8 @@ def parse_pdf(
         fitz_doc.close()
         plumber_doc.close()
 
-    return ParsedDocument(filename=filename, total_pages=total_pages, pages=pages)
+    return ParsedDocument(
+        filename=filename,
+        total_pages=total_pages,
+        pages=[page for page in pages if page is not None],
+    )

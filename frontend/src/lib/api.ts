@@ -36,6 +36,10 @@ export interface DocumentMeta {
   current_page?: number | null;
   ocr_candidate_pages_total: number;
   ocr_processed_pages: number;
+  index_total_nodes: number;
+  index_done_nodes: number;
+  index_total_batches: number;
+  index_done_batches: number;
   ocr_pages: number[];
   low_quality_pages: number[];
   ocr_provider?: string;

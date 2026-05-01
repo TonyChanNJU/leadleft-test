@@ -254,3 +254,47 @@ This document serves as an ongoing log of development activities, milestones ach
   - Updated the frontend status badge to display `PARSING xx%` and `OCR xx%` instead of only page counters.
   - Expanded the README trade-off note to clarify that future batch-aware indexing progress should mainly improve performance and recoverability for both cloud and local embedding modes, rather than retrieval accuracy by itself.
   - Added the missing README caveat that overly small indexing batches would increase cloud embedding round-trip overhead and can also reduce local embedding throughput.
+  - Added `spec/persistent_jobs_and_indexing_plan.md` and linked it from both READMEs so the persistent-job and indexing roadmap has a concrete implementation note instead of living only in discussion.
+
+## [Infra: persistent job shell for document processing]
+- **Milestone:** Land Phase 1 of the resumability roadmap
+- **Activities:**
+  - Added a SQLite-backed persistent job store (`document_jobs` + `document_job_progress`) to track durable document-processing state outside process memory.
+  - Synced upload/processing status changes into the persistent job store while preserving the existing `/api/documents` response shape for the frontend.
+  - Added startup recovery that requeues unfinished jobs after backend restarts instead of silently dropping them.
+  - Added cleanup hooks so document deletion and full resets also remove their persisted job rows.
+  - Added focused backend tests covering durable job creation, unfinished-job recovery scheduling, and persistent-job cleanup on document deletion.
+
+## [Infra: page-level OCR checkpoints]
+- **Milestone:** Land Phase 2 of the resumability roadmap
+- **Activities:**
+  - Added per-page parser checkpoints under `data/jobs/<doc_id>/pages` so native extraction output is persisted before OCR/indexing finishes.
+  - Extended the parser to reload completed native pages from checkpoint files instead of recomputing them on rerun.
+  - Persisted OCR-completed page state so resumed runs skip pages whose fallback OCR already finished before an interruption.
+  - Wired the upload pipeline to use document-specific checkpoint directories and to clean them up when documents/jobs are deleted.
+  - Added backend tests covering native checkpoint reuse, OCR checkpoint reuse, and checkpoint-directory cleanup on document deletion.
+
+## [UX: resume frontend polling after reload]
+- **Milestone:** Keep recovered backend jobs visible in the browser
+- **Activities:**
+  - Added frontend startup polling for documents already in `queued` / `parsing` / `ocr` / `indexing` so reopening the page continues tracking recovered backend jobs.
+  - Deduplicated polling per document in the browser so upload-triggered tracking and startup recovery tracking share one in-flight polling task.
+  - Kept startup polling silent by default while preserving transition announcements for newly uploaded files in the current session.
+
+## [Infra: batch-aware indexing progress]
+- **Milestone:** Land Phase 3 of the resumability roadmap
+- **Activities:**
+  - Refactored the indexer to keep existing text/table node semantics while assigning stable node ids for future resumable writes.
+  - Replaced the one-shot `VectorStoreIndex(nodes=...)` build path with explicit batch insertion so indexing progress can be reported per node and per batch.
+  - Persisted `index_total_nodes`, `index_done_nodes`, `index_total_batches`, and `index_done_batches` into the document job store, including schema backfill for existing SQLite files.
+  - Exposed real `INDEXING` percentages through `/api/documents` and updated the frontend badge to display them.
+  - Added targeted backend tests covering stable node ids, table-node preservation, batch progress reporting, and indexing progress percentage calculation.
+
+## [Infra: lease reclaim and resumable indexing]
+- **Milestone:** Land Phase 4 of the resumability roadmap
+- **Activities:**
+  - Added lease-owner and heartbeat semantics to persistent document jobs so stale attempts can be distinguished from the current active owner.
+  - Added startup recovery for orphaned running jobs and a background monitor that periodically reclaims stale leases during normal service operation.
+  - Taught the indexer to resume from the last fully completed batch instead of always rebuilding from scratch, while deleting/reinserting the current batch by stable node ids to keep retries idempotent.
+  - Guarded parser/indexing progress updates and final state transitions so stale attempts cannot overwrite the active attempt after lease handoff.
+  - Added focused tests covering stale-job reclamation and resumed indexing from a partially completed batch.

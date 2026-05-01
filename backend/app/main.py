@@ -1,5 +1,6 @@
 """FastAPI application entry point."""
 
+import contextlib
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -16,14 +17,30 @@ async def lifespan(app: FastAPI):
     import asyncio
     import logging
 
+    logger = logging.getLogger(__name__)
+
     # Startup: ensure data directories exist
     settings.ensure_dirs()
+    upload.bootstrap_document_jobs()
+    recovered_jobs = upload.recover_orphaned_document_jobs()
+    if recovered_jobs:
+        logger.info("Recovered %s unfinished document job(s) on startup", recovered_jobs)
+
+    async def _monitor_stale_jobs():
+        while True:
+            await asyncio.sleep(max(5, settings.job_recovery_scan_interval_seconds))
+            try:
+                recovered = upload.reclaim_and_recover_stale_document_jobs()
+                if recovered:
+                    logger.info("Recovered %s stale document job(s)", recovered)
+            except Exception:
+                logger.exception("Background stale-job recovery failed")
+
+    recovery_task = asyncio.create_task(_monitor_stale_jobs())
 
     # If using local embeddings, warm up the model in the background.
     # This reduces the first indexing latency spike (model download/load).
     if settings.embedding_provider == "local":
-        logger = logging.getLogger(__name__)
-
         async def _warmup():
             try:
                 from app.services.embedding import get_embedding_model
@@ -35,8 +52,12 @@ async def lifespan(app: FastAPI):
 
         asyncio.create_task(_warmup())
 
-    yield
-    # Shutdown: cleanup if needed
+    try:
+        yield
+    finally:
+        recovery_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await recovery_task
 
 
 app = FastAPI(

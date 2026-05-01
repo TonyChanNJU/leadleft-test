@@ -11,6 +11,7 @@ from app.services.pdf_parser import (
     ParsedDocument,
     _diagnose_page,
     _extract_text_from_paddle_result,
+    _load_page_checkpoint,
     _maybe_ocr_page,
     parse_pdf,
 )
@@ -255,3 +256,114 @@ def test_parse_pdf_reports_parsing_and_ocr_progress(tmp_path, monkeypatch):
     assert ocr_events[0].ocr_candidate_pages_total == 1
     assert ocr_events[-1].ocr_processed_pages == 1
     assert ocr_events[-1].processed_pages == 1
+
+
+def test_parse_pdf_reuses_native_page_checkpoints(tmp_path, monkeypatch):
+    pdf_path = tmp_path / "native-resume.pdf"
+    checkpoint_dir = tmp_path / "checkpoints"
+    doc = fitz.open()
+    doc.new_page()
+    doc.new_page()
+    doc.save(pdf_path)
+    doc.close()
+
+    extract_calls: list[int] = []
+
+    def fake_extract_native_page_content(_fitz_page, _plumber_page, page_num):
+        extract_calls.append(page_num)
+        diagnostics = PageDiagnostics(
+            text_length=10,
+            cjk_chars=5,
+            cjk_ratio=0.5,
+            cid_marker_count=0,
+            replacement_char_count=0,
+            private_use_count=0,
+            suspicious_symbol_ratio=0.0,
+            image_count=0,
+            image_area_ratio=0.0,
+            table_area_ratio=0.0,
+            is_low_quality=False,
+            reasons=[],
+        )
+        return PageContent(
+            page_num=page_num,
+            text=f"native-{page_num}",
+            native_text=f"native-{page_num}",
+            diagnostics=diagnostics,
+        )
+
+    monkeypatch.setattr(
+        "app.services.pdf_parser._extract_native_page_content",
+        fake_extract_native_page_content,
+    )
+
+    parsed_first = parse_pdf(str(pdf_path), checkpoint_dir=str(checkpoint_dir))
+    parsed_second = parse_pdf(str(pdf_path), checkpoint_dir=str(checkpoint_dir))
+
+    assert extract_calls == [1, 2]
+    assert [page.text for page in parsed_first.pages] == ["native-1", "native-2"]
+    assert [page.text for page in parsed_second.pages] == ["native-1", "native-2"]
+
+    checkpointed = _load_page_checkpoint(str(checkpoint_dir), 1)
+    assert checkpointed is not None
+    assert checkpointed.native_text == "native-1"
+    assert checkpointed.ocr_completed is False
+
+
+def test_parse_pdf_reuses_completed_ocr_checkpoints(tmp_path, monkeypatch):
+    pdf_path = tmp_path / "ocr-resume.pdf"
+    checkpoint_dir = tmp_path / "checkpoints"
+    doc = fitz.open()
+    doc.new_page()
+    doc.save(pdf_path)
+    doc.close()
+
+    low_quality = PageDiagnostics(
+        text_length=0,
+        cjk_chars=0,
+        cjk_ratio=0.0,
+        cid_marker_count=0,
+        replacement_char_count=1,
+        private_use_count=0,
+        suspicious_symbol_ratio=0.0,
+        image_count=0,
+        image_area_ratio=0.0,
+        table_area_ratio=0.0,
+        is_low_quality=True,
+        reasons=["replacement_characters"],
+    )
+
+    monkeypatch.setattr(
+        "app.services.pdf_parser._extract_native_page_content",
+        lambda _fitz_page, _plumber_page, page_num: PageContent(
+            page_num=page_num,
+            text="native-1",
+            native_text="native-1",
+            diagnostics=low_quality,
+        ),
+    )
+
+    ocr_calls: list[int] = []
+
+    def fake_maybe_ocr_page(*_args, **_kwargs):
+        ocr_calls.append(1)
+        return "ocr-1"
+
+    monkeypatch.setattr("app.services.pdf_parser._maybe_ocr_page", fake_maybe_ocr_page)
+
+    parsed_first = parse_pdf(
+        str(pdf_path),
+        ocr_provider="paddle",
+        checkpoint_dir=str(checkpoint_dir),
+    )
+    parsed_second = parse_pdf(
+        str(pdf_path),
+        ocr_provider="paddle",
+        checkpoint_dir=str(checkpoint_dir),
+    )
+
+    assert ocr_calls == [1]
+    assert parsed_first.pages[0].text == "ocr-1"
+    assert parsed_first.pages[0].ocr_completed is True
+    assert parsed_second.pages[0].text == "ocr-1"
+    assert parsed_second.pages[0].ocr_text == "ocr-1"

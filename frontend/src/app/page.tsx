@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Send, FileText, Trash2, AlertCircle, CheckCircle2, Moon, Sun } from "lucide-react";
 import { FileUpload } from "@/components/FileUpload";
 import { MessageBubble } from "@/components/MessageBubble";
@@ -20,6 +20,10 @@ interface ToastData {
 }
 
 const PROCESSING_TIMEOUT_MS = 30 * 60 * 1000;
+
+function isTerminalProcessingStatus(status: DocumentMeta["processing_status"]): boolean {
+  return status === "ready" || status === "failed";
+}
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -69,7 +73,7 @@ function getDocumentStatusBadge(doc: DocumentMeta): string | null {
     case "ocr":
       return progressPct != null ? `OCR ${progressPct}%` : "OCR";
     case "indexing":
-      return "INDEXING";
+      return progressPct != null ? `INDEXING ${progressPct}%` : "INDEXING";
     case "failed":
       return "FAILED";
     default:
@@ -113,20 +117,21 @@ export default function Home() {
       : `http://${window.location.hostname}:8000`;
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const pollingTasksRef = useRef<Map<string, Promise<DocumentMeta>>>(new Map());
 
-  const showToast = (msg: string, type: "error" | "success") => {
+  const showToast = useCallback((msg: string, type: "error" | "success") => {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 4000);
-  };
+  }, []);
 
   const fetchDocuments = async () => {
     const docs = await getDocuments();
     setDocuments(docs);
   };
 
-  const mergeDocument = (doc: DocumentMeta) => {
+  const mergeDocument = useCallback((doc: DocumentMeta) => {
     setDocuments((prev) => upsertDocumentState(prev, doc));
-  };
+  }, []);
 
   const fetchStartupData = async () => {
     try {
@@ -170,7 +175,7 @@ export default function Home() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  const announceProcessingStatus = (doc: DocumentMeta, fileName: string) => {
+  const announceProcessingStatus = useCallback((doc: DocumentMeta, fileName: string) => {
     switch (doc.processing_status) {
       case "ocr":
         setMessages((prev) => [
@@ -205,34 +210,70 @@ export default function Home() {
       default:
         return;
     }
-  };
+  }, [showToast]);
 
-  const waitForDocumentReady = async (initialDoc: DocumentMeta, fileName: string) => {
+  const waitForDocumentReady = useCallback((
+    initialDoc: DocumentMeta,
+    options?: { fileName?: string; announceTransitions?: boolean }
+  ): Promise<DocumentMeta> => {
+    const existingTask = pollingTasksRef.current.get(initialDoc.doc_id);
+    if (existingTask) {
+      return existingTask;
+    }
+
     const startedAt = Date.now();
     let lastStatus = initialDoc.processing_status;
 
-    while (Date.now() - startedAt < PROCESSING_TIMEOUT_MS) {
-      const doc = await getDocument(initialDoc.doc_id);
-      mergeDocument(doc);
+    const task = (async () => {
+      while (Date.now() - startedAt < PROCESSING_TIMEOUT_MS) {
+        const doc = await getDocument(initialDoc.doc_id);
+        mergeDocument(doc);
 
-      if (doc.processing_status !== lastStatus) {
-        announceProcessingStatus(doc, fileName);
-        lastStatus = doc.processing_status;
+        if (
+          options?.announceTransitions &&
+          options.fileName &&
+          doc.processing_status !== lastStatus
+        ) {
+          announceProcessingStatus(doc, options.fileName);
+          lastStatus = doc.processing_status;
+        }
+
+        if (doc.processing_status === "ready" || doc.indexed) {
+          return doc;
+        }
+
+        if (doc.processing_status === "failed") {
+          throw new Error(doc.processing_error ?? "Document processing failed.");
+        }
+
+        await delay(getPollDelayMs(doc, startedAt));
       }
 
-      if (doc.processing_status === "ready" || doc.indexed) {
-        return doc;
-      }
+      throw new Error("Document processing is still running.");
+    })().finally(() => {
+      pollingTasksRef.current.delete(initialDoc.doc_id);
+    });
 
-      if (doc.processing_status === "failed") {
-        throw new Error(doc.processing_error ?? "Document processing failed.");
-      }
+    pollingTasksRef.current.set(initialDoc.doc_id, task);
+    return task;
+  }, [announceProcessingStatus, mergeDocument]);
 
-      await delay(getPollDelayMs(doc, startedAt));
+  useEffect(() => {
+    for (const doc of documents) {
+      if (isTerminalProcessingStatus(doc.processing_status) || doc.indexed) {
+        continue;
+      }
+      if (pollingTasksRef.current.has(doc.doc_id)) {
+        continue;
+      }
+      void waitForDocumentReady(doc).catch((error: unknown) => {
+        console.error("Background document polling ended", {
+          docId: doc.doc_id,
+          error,
+        });
+      });
     }
-
-    throw new Error("Document processing is still running.");
-  };
+  }, [documents, waitForDocumentReady]);
 
   const handleUpload = async (file: File) => {
     setIsUploading(true);
@@ -246,7 +287,10 @@ export default function Home() {
 
       showToast("Upload complete. Parsing...", "success");
 
-      void waitForDocumentReady(uploadRes, file.name)
+      void waitForDocumentReady(uploadRes, {
+        fileName: file.name,
+        announceTransitions: true,
+      })
         .then((doc) => {
           mergeDocument(doc);
           setMessages(prev => [...prev, {
